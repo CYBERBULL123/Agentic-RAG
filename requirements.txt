@@ -1,0 +1,54 @@
+# Core Dependencies
+langchain
+langgraph
+langchain-google-genai
+google-generativeai
+
+# Vector Database
+chromadb
+sentence-transformers
+nltk
+
+# Document Processing
+pypdf
+python-docx
+openpyxl
+unstructured
+pytesseract
+html2text
+
+# Web Interface
+streamlit
+streamlit-chat
+streamlit-aggrid
+
+# Utilities
+python-dotenv
+pydantic
+requests
+beautifulsoup4
+duckduckgo-search
+
+# Data Processing
+pandas
+numpy
+
+# Async Support
+aiohttp
+asyncio-throttle
+
+# Monitoring and Logging
+wandb
+loguru
+
+# RLHF and Feedback
+datasets
+transformers
+
+# Optional OCR (requires Tesseract installation)
+# tesseract
+
+# Development
+pytest
+black
+flake8
