@@ -11,10 +11,7 @@ from dataclasses import dataclass
 import operator
 
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolExecutor, ToolInvocation
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
-from langchain.tools import BaseTool
-from langchain.pydantic_v1 import BaseModel, Field
 from loguru import logger
 
 # Import our components
@@ -221,6 +218,91 @@ class AgenticWorkflow:
                 "error": str(e)
             }
     
+    def simple_query(self, query: str, session_id: str) -> Dict[str, Any]:
+        """
+        Simple and clean query processing - just search web and get response.
+        """
+        try:
+            logger.info(f"Processing query: {query}")
+            
+            # Simple web search with improved query
+            web_results = []
+            try:
+                # Add some keywords to make search more specific
+                enhanced_query = query
+                if "hyderabad" in query.lower() and "tech" in query.lower():
+                    enhanced_query = f"{query} startup news India 2024 2025"
+                elif "latest" in query.lower() and "news" in query.lower():
+                    enhanced_query = f"{query} today recent current"
+                
+                logger.info(f"Searching with enhanced query: {enhanced_query}")
+                web_results = self.tools_manager.web_search.search_web(enhanced_query, max_results=5)
+                logger.info(f"Got {len(web_results)} web results")
+                
+                # Log the results to see what we're getting
+                for i, result in enumerate(web_results):
+                    logger.info(f"Result {i+1}: {result.get('title', 'No title')[:60]}...")
+                    
+            except Exception as e:
+                logger.warning(f"Web search failed: {e}")
+            
+            # Build context from search results
+            context = ""
+            if web_results:
+                context = "Current web search results:\n\n"
+                for i, result in enumerate(web_results, 1):
+                    title = result.get('title', 'No title')
+                    snippet = result.get('snippet', result.get('content', result.get('body', 'No content')))
+                    url = result.get('url', '')
+                    
+                    # Only include if we have meaningful content
+                    if title != 'No title' and snippet != 'No content' and len(snippet.strip()) > 20:
+                        context += f"{i}. **{title}**\n"
+                        context += f"Content: {snippet}\n"
+                        if url:
+                            context += f"Source: {url}\n"
+                        context += "\n"
+                        
+                logger.info(f"Built context with {len(context)} characters")
+            
+            # Generate response using web search results
+            if context and len(context.strip()) > 50:
+                logger.info("Generating response from web search results")
+                system_prompt = """You are a helpful AI assistant with access to current web search results. 
+                Use the web search results to provide an accurate, informative, and up-to-date response.
+                Focus on the specific information found in the search results."""
+                
+                user_prompt = f"""Question: {query}
+
+Please provide a comprehensive answer based on the web search results provided. 
+Include specific details, names, dates, and facts from the search results."""
+
+                response = self.llm.generate_response(user_prompt, context, system_prompt)
+                logger.info(f"Generated response: {response[:100]}...")
+            else:
+                logger.warning("No usable web search context found")
+                response = "I couldn't find specific current information about your query. Please try rephrasing your question."
+            
+            return {
+                "response": response,
+                "confidence_score": 0.8 if web_results else 0.3,
+                "sources_used": {"web_search": len(web_results) > 0},
+                "processing_steps": ["simple_web_search", "response_generation"],
+                "web_results": web_results,
+                "rag_results": [],
+                "function_results": [],
+                "session_id": session_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in simple query: {e}")
+            return {
+                "response": "I apologize, but I encountered an error processing your request.",
+                "confidence_score": 0.1,
+                "sources_used": {"error": True},
+                "error": str(e)
+            }
+    
     def stream_response(self, query: str, session_id: str) -> Generator[str, None, None]:
         """
         Stream response generation (simplified version).
@@ -376,7 +458,13 @@ class AgenticWorkflow:
             state["processing_steps"].append("web_search")
             
             query = state["query"]
-            results = self.tools_manager.web_search.search_web(query, max_results=3)
+            # Use simple web search with basic DuckDuckGo
+            results = self.tools_manager.web_search.search_web(
+                query=query, 
+                max_results=3, 
+                extract_content=False,  # Disable content extraction to avoid timeouts
+                backend="duckduckgo"    # Use only reliable DuckDuckGo backend
+            )
             
             state["web_results"] = results
             if results:
@@ -491,8 +579,18 @@ class AgenticWorkflow:
             # Add web search results
             if state["web_results"]:
                 web_context = "Recent web information:\n"
-                for result in state["web_results"]:
-                    web_context += f"- {result['title']}: {result['snippet']}\n"
+                for i, result in enumerate(state["web_results"], 1):
+                    title = result.get('title', f'Search Result {i}')
+                    url = result.get('url', '')
+                    
+                    # Use simple snippet content
+                    content = result.get('snippet', 'No content available')
+                    
+                    web_context += f"{i}. **{title}**\n"
+                    web_context += f"   {content}\n"
+                    if url:
+                        web_context += f"   Source: {url}\n"
+                    web_context += "\n"
                 context_parts.append(web_context)
             
             # Add RAG results
@@ -510,28 +608,13 @@ class AgenticWorkflow:
                     func_context += f"- {result['function']}: {result['result']}\n"
                 context_parts.append(func_context)
             
-            # Add conversation memory context
-            memory_context = ""
-            if len(state["messages"]) > 1:  # More than just current message
-                memory_context = "Conversation context:\n"
-                for msg in state["messages"][-4:-1]:  # Recent messages except current
-                    role = "You" if isinstance(msg, HumanMessage) else "Assistant"
-                    memory_context += f"{role}: {msg.content[:100]}...\n"
-                context_parts.append(memory_context)
+            # Skip conversation memory context for speed
+            # memory_context processing disabled for faster responses
             
             full_context = "\n\n".join(context_parts)
             
             # Generate response
-            system_instruction = f"""
-            You are a helpful AI assistant. Use the provided information to answer the user's question comprehensively and accurately.
-            
-            Guidelines:
-            - Be direct and helpful
-            - Cite sources when possible (web, knowledge base, calculations)
-            - If you used multiple sources, mention that
-            - Be concise but thorough
-            - If information is conflicting, acknowledge it
-            """
+            system_instruction = """You are a helpful AI assistant. Answer the user's question using the provided context information. Be direct and concise."""
             
             response = self.llm.generate_response(
                 state["query"],
@@ -539,18 +622,8 @@ class AgenticWorkflow:
                 system_instruction
             )
             
-            # Calculate confidence based on sources used
-            confidence = 0.5  # Base confidence
-            if state["sources_used"]["web_search"]:
-                confidence += 0.15
-            if state["sources_used"]["knowledge_base"]:
-                confidence += 0.20
-            if state["sources_used"]["function_calls"]:
-                confidence += 0.10
-            if state["sources_used"]["memory"]:
-                confidence += 0.05
-            
-            confidence = min(confidence, 0.95)  # Cap at 95%
+            # Simple confidence calculation
+            confidence = 0.8 if state["web_results"] else 0.5
             
             state["response"] = response
             state["confidence_score"] = confidence

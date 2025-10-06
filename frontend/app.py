@@ -93,6 +93,42 @@ def render_chat_message(message: Dict[str, Any], is_user: bool = True):
                     # Confidence with emoji
                     conf_emoji = "🟢" if confidence >= 0.8 else "🟡" if confidence >= 0.6 else "🔴"
                     st.caption(f"{conf_emoji} {confidence:.0%}")
+                
+                # Show web search results if available
+                web_results = message.get('web_results', [])
+                if web_results and len(web_results) > 0:
+                    with st.expander(f"🔍 Web Search Results ({len(web_results)} sources)", expanded=False):
+                        st.markdown("**📋 Sources used to generate this response:**")
+                        st.caption("These are the web search results that the AI used to answer your question.")
+                        st.write("")  # Add some spacing
+                        
+                        for i, result in enumerate(web_results, 1):
+                            title = result.get('title', 'Unknown Title')
+                            url = result.get('url', '')
+                            snippet = result.get('snippet', result.get('content', 'No content available'))
+                            
+                            # Create a nice card-like display for each result
+                            with st.container():
+                                col_num, col_content = st.columns([1, 10])
+                                
+                                with col_num:
+                                    st.markdown(f"**{i}**")
+                                
+                                with col_content:
+                                    st.markdown(f"**{title}**")
+                                    
+                                    # Truncate snippet if too long
+                                    if len(snippet) > 200:
+                                        snippet = snippet[:200] + "..."
+                                    
+                                    st.write(snippet)
+                                    
+                                    if url:
+                                        st.markdown(f"🔗 [View full article]({url})")
+                                
+                                # Add separator except for last item
+                                if i < len(web_results):
+                                    st.markdown("---")
 
 
 def render_feedback_widget(message_idx: int):
@@ -245,10 +281,6 @@ def render_sidebar():
         # Settings
         st.subheader("⚙️ Settings")
         
-        # Streaming toggle with emoji
-        use_streaming = st.toggle("⚡ Enable Streaming", value=True, help="Real-time response streaming")
-        st.session_state.use_streaming = use_streaming
-        
         # Tool selection with emojis
         st.write("🔧 **Tool Selection:**")
         use_web_search = st.checkbox("🌐 Web Search", value=True, help="Search the internet for current information")
@@ -366,7 +398,7 @@ def render_main_chat():
         st.info("""
         ⚡ **Smart Capabilities:**
         - 🧠 Conversational memory
-        - 📊 Streaming responses
+        - 🌐 Web search integration
         - 🎯 Context-aware answers
         """)
     
@@ -390,39 +422,19 @@ def render_main_chat():
         # Process and display assistant response
         with st.spinner("Thinking..."):
             try:
-                if st.session_state.get('use_streaming', True):
-                    # Streaming response
-                    response_placeholder = st.empty()
-                    full_response = ""
-                    
-                    with st.chat_message("assistant"):
-                        response_placeholder = st.empty()
-                        for chunk in st.session_state.workflow.stream_response(prompt, st.session_state.session_id):
-                            full_response += chunk
-                            response_placeholder.write(f"🤖 **Assistant:** {full_response}")
-                    
-                    # Add to message history
-                    assistant_message = {
-                        "content": full_response,
-                        "is_user": False,
-                        "timestamp": datetime.now(),
-                        "sources_used": {"web_search": False, "knowledge_base": True, "function_calls": False},
-                        "confidence_score": 0.8  # Placeholder for streaming
-                    }
-                    
-                else:
-                    # Regular response
-                    result = asyncio.run(process_message_async(prompt))
-                    
-                    assistant_message = {
-                        "content": result['response'],
-                        "is_user": False,
-                        "timestamp": datetime.now(),
-                        "sources_used": result.get('sources_used', {}),
-                        "confidence_score": result.get('confidence_score', 0.5)
-                    }
-                    
-                    render_chat_message(assistant_message, is_user=False)
+                # Always use simple method for better results
+                result = st.session_state.workflow.simple_query(prompt, st.session_state.session_id)
+                
+                assistant_message = {
+                    "content": result['response'],
+                    "is_user": False,
+                    "timestamp": datetime.now(),
+                    "sources_used": result.get('sources_used', {}),
+                    "confidence_score": result.get('confidence_score', 0.5),
+                    "web_results": result.get('web_results', [])
+                }
+                
+                render_chat_message(assistant_message, is_user=False)
                 
                 st.session_state.messages.append(assistant_message)
                 

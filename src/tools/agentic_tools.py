@@ -7,7 +7,13 @@ import asyncio
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 import requests
-from duckduckgo_search import DDGS
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+import re
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 from loguru import logger
 from ..utils.gemini_client import get_gemini_llm
 
@@ -18,85 +24,78 @@ class WebSearchTool:
     def __init__(self, timeout: int = 10):
         """Initialize web search tool."""
         self.timeout = timeout
-        self.ddgs = DDGS()
     
-    def search_web(self, 
-                   query: str, 
-                   max_results: int = 5,
-                   region: str = "us-en") -> List[Dict[str, Any]]:
+    def search_web(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
-        Search the web using DuckDuckGo.
-        
-        Args:
-            query: Search query
-            max_results: Maximum number of results
-            region: Search region
-            
-        Returns:
-            List of search results
+        Simple web search - just get results from DDGS and return them.
         """
         try:
-            logger.info(f"Searching web for: {query}")
+            logger.info(f"DDGS searching for: '{query}'")
             
+            # Simple DDGS search with region for better results
+            ddgs = DDGS()
+            search_results = list(ddgs.text(
+                query=query, 
+                max_results=max_results,
+                region='us-en'  # Use US English for better results
+            ))
+            
+            logger.info(f"Raw DDGS returned {len(search_results)} results")
+            
+            # Process results and filter out low-quality ones
             results = []
-            search_results = self.ddgs.text(
-                keywords=query,
-                region=region,
-                max_results=max_results
-            )
+            for i, result in enumerate(search_results):
+                title = result.get("title", "")
+                body = result.get("body", "")
+                href = result.get("href", "")
+                
+                logger.info(f"Processing result {i+1}: title='{title[:50]}...', body='{body[:100]}...'")
+                
+                # Basic quality check
+                if title and body and len(body.strip()) > 30:
+                    results.append({
+                        "title": title,
+                        "url": href,
+                        "snippet": body,
+                        "content": body
+                    })
+                else:
+                    logger.warning(f"Skipped low-quality result: title='{title[:30]}', body_len={len(body)}")
             
-            for result in search_results:
-                results.append({
-                    "title": result.get("title", ""),
-                    "url": result.get("href", ""),
-                    "snippet": result.get("body", ""),
-                    "timestamp": datetime.now().isoformat()
-                })
-            
+            logger.info(f"Returning {len(results)} quality results")
             return results
             
         except Exception as e:
-            logger.error(f"Error in web search: {e}")
+            logger.error(f"Search error: {e}")
             return []
     
-    def search_news(self, 
-                   query: str, 
-                   max_results: int = 5) -> List[Dict[str, Any]]:
+    # Removed complex multi-backend search for simplicity
+    
+    def search_news(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
-        Search for news articles.
-        
-        Args:
-            query: Search query
-            max_results: Maximum number of results
-            
-        Returns:
-            List of news results
+        Simple news search.
         """
         try:
-            logger.info(f"Searching news for: {query}")
+            ddgs = DDGS()
+            news_results = ddgs.news(query=query, max_results=max_results)
             
             results = []
-            news_results = self.ddgs.news(
-                keywords=query,
-                max_results=max_results
-            )
-            
             for result in news_results:
-                results.append({
-                    "title": result.get("title", ""),
-                    "url": result.get("url", ""),
-                    "snippet": result.get("body", ""),
-                    "source": result.get("source", ""),
-                    "date": result.get("date", ""),
-                    "timestamp": datetime.now().isoformat()
-                })
+                if result.get("title") and result.get("body"):
+                    results.append({
+                        "title": result.get("title"),
+                        "url": result.get("url", ""),
+                        "snippet": result.get("body"),
+                        "content": result.get("body")
+                    })
             
             return results
             
         except Exception as e:
-            logger.error(f"Error in news search: {e}")
+            logger.error(f"News search error: {e}")
             return []
-
+    
+    # Removed complex content extraction and enhanced search for simplicity
 
 class RAGRetrievalTool:
     """RAG retrieval tool for knowledge base querying."""
@@ -359,9 +358,10 @@ class AgenticToolsManager:
             web_results = []
             rag_results = []
             
-            # Web search if enabled
+            # Enhanced web search if enabled
             if use_web_search:
-                web_results = self.web_search.search_web(query, max_web_results)
+                enhanced_search = self.web_search.get_enhanced_search_results(query, max_web_results)
+                web_results = enhanced_search.get("results", [])
             
             # RAG retrieval if enabled
             if use_rag:
@@ -370,11 +370,19 @@ class AgenticToolsManager:
             # Combine all information for response generation
             context_parts = []
             
-            # Add web search results
+            # Add enhanced web search results
             if web_results:
-                web_context = "Web Search Results:\n"
+                web_context = "Current Web Information:\n"
                 for i, result in enumerate(web_results):
-                    web_context += f"{i+1}. {result['title']}: {result['snippet']}\n"
+                    title = result.get('title', 'Unknown')
+                    source = result.get('url', '')
+                    
+                    # Use enhanced summary if available, otherwise fall back to snippet
+                    content = result.get('combined_summary', result.get('snippet', ''))
+                    
+                    web_context += f"{i+1}. **{title}**\n"
+                    web_context += f"   Source: {source}\n"
+                    web_context += f"   Content: {content}\n\n"
                 context_parts.append(web_context)
             
             # Add RAG results
